@@ -1,0 +1,21 @@
+node_modules
+.env
+.DS_Store
+typechain
+coverage
+coverage.json
+deploymentState.json
+deploymentState_AGoerli.json
+nodemon.json
+hardhat-dependency-compiler
+
+#Hardhat files
+cache
+artifacts
+
+#Others
+scripts/PastebinPush.ts
+
+#Deployment states
+state_arbigoerli.json
+state.json
