@@ -460,6 +460,8 @@ describe("Token Migration", async () => {
       await expect(TokenV2.connect(user2).setRewardRatio(10)).to.be.reverted;
       await expect(TokenV2.connect(user2).setRewardManager(user1.address)).to.be
         .reverted;
+      await expect(TokenV2.connect(user2).enableTrading()).to.be
+        .reverted;
     });
     it("revert setTokenV1 if not before Migration", async () => {
       await TokenV2.setMigration();

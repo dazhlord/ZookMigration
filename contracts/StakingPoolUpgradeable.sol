@@ -12,7 +12,13 @@ import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
 import "./interfaces/IPoolExtension.sol";
 import "./interfaces/IStakingV1.sol";
 
-contract StakingPoolUpgradeable is Initializable, UUPSUpgradeable, ContextUpgradeable, OwnableUpgradeable, ReentrancyGuardUpgradeable {
+contract StakingPoolUpgradeable is
+    Initializable,
+    UUPSUpgradeable,
+    ContextUpgradeable,
+    OwnableUpgradeable,
+    ReentrancyGuardUpgradeable
+{
     using SafeERC20 for IERC20;
 
     IUniswapV2Router02 _router;
@@ -53,9 +59,15 @@ contract StakingPoolUpgradeable is Initializable, UUPSUpgradeable, ContextUpgrad
         bool _wasCompounded
     );
 
-    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
+    function _authorizeUpgrade(
+        address newImplementation
+    ) internal override onlyOwner {}
 
-    function initialize(address _token, uint256 _lockupPeriod, address __router) public initializer {
+    function initialize(
+        address _token,
+        uint256 _lockupPeriod,
+        address __router
+    ) public initializer {
         __Ownable_init(msg.sender);
         __UUPSUpgradeable_init();
         __Context_init();
@@ -64,6 +76,18 @@ contract StakingPoolUpgradeable is Initializable, UUPSUpgradeable, ContextUpgrad
         token = _token;
         lockupPeriod = _lockupPeriod;
         _router = IUniswapV2Router02(__router);
+    }
+
+    function getUnpaid(address wallet) public view returns (uint256) {
+        if (shares[wallet].amount == 0) {
+            return 0;
+        }
+        uint256 earnedRewards = _cumulativeRewards(shares[wallet].amount);
+        uint256 rewardsExcluded = rewards[wallet].excluded;
+        if (earnedRewards <= rewardsExcluded) {
+            return 0;
+        }
+        return earnedRewards - rewardsExcluded;
     }
 
     // Assumes this contract is the owner of staking v1 contract
@@ -77,16 +101,22 @@ contract StakingPoolUpgradeable is Initializable, UUPSUpgradeable, ContextUpgrad
         uint128 userStakeId = stakingV1.userStakeId(user);
 
         for (uint128 index = 0; index < userStakeId; index++) {
-            (, uint32 stakingType, uint128 stakedAmount, bool claimed) = stakingV1.userMapping(
-                user,
-                index
-            );
+            (
+                ,
+                uint32 stakingType,
+                uint128 stakedAmount,
+                bool claimed
+            ) = stakingV1.userMapping(user, index);
             if (!claimed && stakingType * 28 days == lockupPeriod) {
                 stakingV1.transferTokens(address(this), stakedAmount);
                 _setShare(user, stakedAmount, false);
             }
         }
         isMigrated[user] = true;
+    }
+
+    function depositRewards() external payable {
+        _depositRewards(_msgSender(), msg.value);
     }
 
     function stake(uint256 _amount) external nonReentrant {
@@ -116,23 +146,42 @@ contract StakingPoolUpgradeable is Initializable, UUPSUpgradeable, ContextUpgrad
         _setShare(_msgSender(), _amount, true);
     }
 
-    function _setShare(
-        address wallet,
-        uint256 balanceUpdate,
-        bool isRemoving
-    ) internal {
-        if (address(extension) != address(0)) {
-            try
-                extension.setShare(wallet, balanceUpdate, isRemoving)
-            {} catch {}
-        }
-        if (isRemoving) {
-            _removeShares(wallet, balanceUpdate);
-            emit Unstake(wallet, balanceUpdate);
-        } else {
-            _addShares(wallet, balanceUpdate);
-            emit Stake(wallet, balanceUpdate);
-        }
+    function claimReward(
+        bool _compound,
+        uint256 _compMinTokensToReceive
+    ) external nonReentrant {
+        _distributeReward(_msgSender(), _compound, _compMinTokensToReceive);
+        emit ClaimReward(_msgSender());
+    }
+
+    function claimRewardAdmin(
+        address _wallet,
+        bool _compound,
+        uint256 _compMinTokensToReceive
+    ) external nonReentrant onlyOwner {
+        _distributeReward(_wallet, _compound, _compMinTokensToReceive);
+        emit ClaimReward(_wallet);
+    }
+
+    function setPoolExtension(IPoolExtension _extension) external onlyOwner {
+        extension = _extension;
+    }
+
+    function setStakingV1(IStakingV1 _stakingV1) external onlyOwner {
+        stakingV1 = _stakingV1;
+    }
+
+    function setLockupPeriod(uint256 _seconds) external onlyOwner {
+        require(_seconds < 365 days, "lte 1 year");
+        lockupPeriod = _seconds;
+    }
+
+    function withdrawTokens(uint256 _amount) external onlyOwner {
+        IERC20 _token = IERC20(token);
+        _token.safeTransfer(
+            _msgSender(),
+            _amount == 0 ? _token.balanceOf(address(this)) : _amount
+        );
     }
 
     function _addShares(address wallet, uint256 amount) private {
@@ -176,8 +225,23 @@ contract StakingPoolUpgradeable is Initializable, UUPSUpgradeable, ContextUpgrad
         }
     }
 
-    function depositRewards() external payable {
-        _depositRewards(_msgSender(), msg.value);
+    function _setShare(
+        address wallet,
+        uint256 balanceUpdate,
+        bool isRemoving
+    ) internal {
+        if (address(extension) != address(0)) {
+            try
+                extension.setShare(wallet, balanceUpdate, isRemoving)
+            {} catch {}
+        }
+        if (isRemoving) {
+            _removeShares(wallet, balanceUpdate);
+            emit Unstake(wallet, balanceUpdate);
+        } else {
+            _addShares(wallet, balanceUpdate);
+            emit Stake(wallet, balanceUpdate);
+        }
     }
 
     function _depositRewards(address _wallet, uint256 _amountETH) internal {
@@ -244,57 +308,7 @@ contract StakingPoolUpgradeable is Initializable, UUPSUpgradeable, ContextUpgrad
         _setShare(_wallet, _compoundAmount, false);
     }
 
-    function claimReward(
-        bool _compound,
-        uint256 _compMinTokensToReceive
-    ) external nonReentrant {
-        _distributeReward(_msgSender(), _compound, _compMinTokensToReceive);
-        emit ClaimReward(_msgSender());
-    }
-
-    function claimRewardAdmin(
-        address _wallet,
-        bool _compound,
-        uint256 _compMinTokensToReceive
-    ) external nonReentrant onlyOwner {
-        _distributeReward(_wallet, _compound, _compMinTokensToReceive);
-        emit ClaimReward(_wallet);
-    }
-
-    function getUnpaid(address wallet) public view returns (uint256) {
-        if (shares[wallet].amount == 0) {
-            return 0;
-        }
-        uint256 earnedRewards = _cumulativeRewards(shares[wallet].amount);
-        uint256 rewardsExcluded = rewards[wallet].excluded;
-        if (earnedRewards <= rewardsExcluded) {
-            return 0;
-        }
-        return earnedRewards - rewardsExcluded;
-    }
-
     function _cumulativeRewards(uint256 share) internal view returns (uint256) {
         return (share * rewardsPerShare) / MULTIPLIER;
-    }
-
-    function setPoolExtension(IPoolExtension _extension) external onlyOwner {
-        extension = _extension;
-    }
-
-    function setStakingV1(IStakingV1 _stakingV1) external onlyOwner {
-        stakingV1 = _stakingV1;
-    }
-
-    function setLockupPeriod(uint256 _seconds) external onlyOwner {
-        require(_seconds < 365 days, "lte 1 year");
-        lockupPeriod = _seconds;
-    }
-
-    function withdrawTokens(uint256 _amount) external onlyOwner {
-        IERC20 _token = IERC20(token);
-        _token.safeTransfer(
-            _msgSender(),
-            _amount == 0 ? _token.balanceOf(address(this)) : _amount
-        );
     }
 }

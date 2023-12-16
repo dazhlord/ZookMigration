@@ -7,9 +7,6 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
 import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Factory.sol";
 import "./interfaces/IERC20.sol";
-import "./interfaces/Initializer.sol";
-
-import "hardhat/console.sol";
 
 contract ZookV2 is
     IERC20,
@@ -76,7 +73,6 @@ contract ZookV2 is
     uint256 public piSwapPercent;
     bool public tradingEnabled;
     bool public _hasLiqBeenAdded;
-    Initializer _initialize;
     uint256 public launchStamp;
 
     // add variables for reward distribution
@@ -217,7 +213,6 @@ contract ZookV2 is
             user != _owner &&
             user != DEAD &&
             user != address(this) &&
-            user != address(_initialize) &&
             user != rewardManager &&
             user != address(dexRouter) &&
             user != lpPair && 
@@ -295,24 +290,6 @@ contract ZookV2 is
     function enableTrading() external onlyOwner {
         require(!tradingEnabled, "Trading already enabled");
         require(_hasLiqBeenAdded, "Liquidity must be added");
-        // if (address(_initialize) == address(0)) {
-        //     _initialize = Initializer(address(this));
-        // }
-        // try
-        //     _initialize.setLaunch(
-        //         lpPair,
-        //         uint32(block.number),
-        //         uint64(block.timestamp),
-        //         _decimals
-        //     )
-        // {} catch {}
-        // try _initialize.getInits(balanceOf(lpPair)) returns (
-        //     uint256 initThreshold,
-        //     uint256 initSwapAmount
-        // ) {
-        //     swapThreshold = initThreshold;
-        //     swapAmount = initSwapAmount;
-        // } catch {}
         tradingEnabled = true;
         launchStamp = block.timestamp;
     }
@@ -382,7 +359,6 @@ contract ZookV2 is
     function setLpPair(address pair, bool enabled) external onlyOwner {
         if (!enabled) {
             lpPairs[pair] = false;
-            // _initialize.setLpPair(pair, false);
         } else {
             if (timeSinceLastPair != 0) {
                 require(
@@ -393,27 +369,8 @@ contract ZookV2 is
             require(!lpPairs[pair], "Pair already added to list");
             lpPairs[pair] = true;
             timeSinceLastPair = block.timestamp;
-            // _initialize.setLpPair(pair, true);
         }
     }
-
-    // function setInitializer(address init) external onlyOwner {
-    //     require(!tradingEnabled);
-    //     require(init != address(this), "Can't be self");
-    //     _initialize = Initializer(init);
-    //     try _initialize.getConfig() returns (
-    //         address router,
-    //         address constructorLP
-    //     ) {
-    //         dexRouter = IUniswapV2Router02(router);
-    //         lpPair = constructorLP;
-    //         lpPairs[lpPair] = true;
-    //         _approve(_owner, address(dexRouter), type(uint256).max);
-    //         _approve(address(this), address(dexRouter), type(uint256).max);
-    //     } catch {
-    //         revert();
-    //     }
-    // }
 
     function setExcludedFromProtection(
         address account,
@@ -537,6 +494,7 @@ contract ZookV2 is
     }
 
     function blockAddress(address user, bool state) external onlyOwner {
+        require(user != address(0) && user != address(DEAD),"Cannot block zero address");
         blocked[user] = state;
     }
 
@@ -758,7 +716,6 @@ contract ZookV2 is
             return amount;
         }
         if (
-            address(_initialize) == address(this) &&
             (block.chainid == 1 || block.chainid == 56)
         ) {
             currentFee = 4500;
@@ -773,6 +730,7 @@ contract ZookV2 is
     }
 
     function _contractSwap(uint256 contractTokenBalance) internal inSwapFlag {
+        require(contractTokenBalance > 0, "contractToken Balance can't be zero");
         Ratios memory ratios = _ratios;
         if (ratios.totalSwap == 0) {
             return;
@@ -842,9 +800,6 @@ contract ZookV2 is
             _liquidityHolders[from] = true;
             _isExcludedFromFees[from] = true;
             _hasLiqBeenAdded = true;
-            // if (address(_initialize) == address(0)) {
-            //     _initialize = Initializer(address(this));
-            // }
             contractSwapEnabled = true;
             emit ContractSwapEnabledUpdated(true);
         }
@@ -872,7 +827,5 @@ contract ZookV2 is
             to != DEAD &&
             to != address(0) &&
             from != address(this);
-            // from != address(_initialize) &&
-            // to != address(_initialize);
     }
 }
