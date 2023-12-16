@@ -8,6 +8,8 @@ import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
 import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Factory.sol";
 import "./interfaces/IERC20.sol";
 
+import "hardhat/console.sol";
+
 contract ZookV2 is
     IERC20,
     Initializable,
@@ -745,7 +747,7 @@ contract ZookV2 is
         address[] memory path = new address[](2);
         path[0] = address(this);
         path[1] = dexRouter.WETH();
-
+        
         try
             dexRouter.swapExactTokensForETHSupportingFeeOnTransferTokens(
                 contractTokenBalance,
@@ -757,7 +759,13 @@ contract ZookV2 is
         {} catch {
             return;
         }
-
+        //  dexRouter.swapExactTokensForETHSupportingFeeOnTransferTokens(
+        //         contractTokenBalance,
+        //         0,
+        //         path,
+        //         address(this),
+        //         block.timestamp
+        //     );
         uint256 amtBalance = address(this).balance;
         bool success;
         uint256 stakingBalance = (amtBalance * ratios.staking) /

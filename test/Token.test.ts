@@ -21,15 +21,15 @@ describe("Token Migration", async () => {
   let user1: SignerWithAddress;
   let user2: SignerWithAddress;
   let operator: SignerWithAddress;
+  let taxWallet: SignerWithAddress;
   let rewardManager: SignerWithAddress;
-  let Pair: SignerWithAddress;
   let TokenV2: Contract;
   let TokenV1: Contract;
   let UniswapRouter: Contract;
   let UniswapFactory: Contract;
 
   beforeEach(async () => {
-    [owner, user1, user2, rewardManager, operator] = await ethers.getSigners();
+    [owner, user1, user2, rewardManager, operator, taxWallet] = await ethers.getSigners();
 
     const routerABI = require("./ABI/UniswapRouter02.json");
     const factoryABI = require("./ABI/UniswapFactory02.json");
@@ -66,10 +66,10 @@ describe("Token Migration", async () => {
       await TokenV2.setTaxes(0, 1000, 0);
       await TokenV2.setRatios(1, 1, 1, 1);
       await TokenV2.setWallets(
-        owner.address,
-        owner.address,
-        owner.address,
-        owner.address,
+        taxWallet.address,
+        taxWallet.address,
+        taxWallet.address,
+        taxWallet.address,
       );
       await TokenV2.setSwapSettings(1, 1000000, 5, 1000000);
       await TokenV2.setPriceImpactSwapAmount(10);
@@ -147,40 +147,50 @@ describe("Token Migration", async () => {
         const currentTime = (await ethers.provider.getBlock("latest"))
           .timestamp;
 
+        // await TokenV2.setContractSwapEnabled(false, false);
+
         await TokenV2.transfer(
           operator.address,
-          ethers.utils.parseEther("1000"),
+          ethers.utils.parseEther("20000"),
         );
         await TokenV2.connect(operator).approve(
           pair,
-          ethers.utils.parseEther("1000"),
+          ethers.utils.parseEther("20000"),
         );
         await TokenV2.connect(operator).approve(
           UniswapFactory.address,
-          ethers.utils.parseEther("1000"),
+          ethers.utils.parseEther("20000"),
         );
         await TokenV2.connect(operator).approve(
           UniswapRouter.address,
-          ethers.utils.parseEther("1000"),
+          ethers.utils.parseEther("20000"),
         );
         await UniswapRouter.connect(operator).addLiquidityETH(
           TokenV2.address,
-          ethers.utils.parseEther("100"),
+          ethers.utils.parseEther("10000"),
           0,
           0,
           operator.address,
           currentTime + 10000,
-          { value: 100 },
+          { value: 100000 },
         );
+
         await TokenV2.transfer(user1.address, ethers.utils.parseEther("100"));
         await TokenV2.transfer(
           TokenV2.address,
-          ethers.utils.parseEther("1000"),
+          ethers.utils.parseEther("100"),
         );
+
+        // user1 sells token and this will execute _contractSwap function of TokenV2 contract.
+        // _contractSwap function will swap tokens to ETH for taxWallet.
+        const taxWalletBalanceBefore = await ethers.provider.getBalance(taxWallet.address);
         await TokenV2.connect(user1).transfer(
           pair,
           ethers.utils.parseEther("10"),
         );
+        
+        const taxWalletBalanceAfter = await ethers.provider.getBalance(taxWallet.address);
+        expect(Number(taxWalletBalanceAfter.sub(taxWalletBalanceBefore))).to.be.greaterThan(0);
       });
 
       it("revert transfer if not enough balance", async () => {
