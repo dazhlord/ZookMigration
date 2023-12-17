@@ -12,7 +12,7 @@ import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
 import "./interfaces/IPoolExtension.sol";
 import "./interfaces/IStakingV1.sol";
 
-contract StakingPoolUpgradeable is
+contract StakingPool is
     Initializable,
     UUPSUpgradeable,
     ContextUpgradeable,

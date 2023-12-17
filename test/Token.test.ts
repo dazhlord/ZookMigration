@@ -22,14 +22,13 @@ describe("Token Migration", async () => {
   let user2: SignerWithAddress;
   let operator: SignerWithAddress;
   let taxWallet: SignerWithAddress;
-  let rewardManager: SignerWithAddress;
   let TokenV2: Contract;
   let TokenV1: Contract;
   let UniswapRouter: Contract;
   let UniswapFactory: Contract;
 
   beforeEach(async () => {
-    [owner, user1, user2, rewardManager, operator, taxWallet] = await ethers.getSigners();
+    [owner, user1, user2, operator, taxWallet] = await ethers.getSigners();
 
     const routerABI = require("./ABI/UniswapRouter02.json");
     const factoryABI = require("./ABI/UniswapFactory02.json");
@@ -63,10 +62,9 @@ describe("Token Migration", async () => {
       const lpPair = await TokenV2.lpPair();
       await TokenV2.transfer(lpPair, ethers.utils.parseEther("1000000"));
 
-      await TokenV2.setTaxes(0, 1000, 0);
-      await TokenV2.setRatios(1, 1, 1, 1);
+      await TokenV2.setTaxes(500, 1000, 0);
+      await TokenV2.setRatios(2, 2, 1);
       await TokenV2.setWallets(
-        taxWallet.address,
         taxWallet.address,
         taxWallet.address,
         taxWallet.address,
@@ -75,9 +73,6 @@ describe("Token Migration", async () => {
       await TokenV2.setPriceImpactSwapAmount(10);
       await TokenV2.setContractSwapEnabled(true, true);
       await TokenV2.lockTaxes();
-      await TokenV2.setRewardRatio(5000); //50% reward to token holders
-      await TokenV2.setTokenLimitForReward(100); // reward to holders more than 100 tokens
-      await TokenV2.setRewardManager(rewardManager.address);
       await TokenV2.enableTrading();
     });
     describe("transfer", async () => {
@@ -176,23 +171,25 @@ describe("Token Migration", async () => {
         );
 
         await TokenV2.transfer(user1.address, ethers.utils.parseEther("100"));
-        await TokenV2.transfer(
-          TokenV2.address,
-          ethers.utils.parseEther("100"),
-        );
+        await TokenV2.transfer(TokenV2.address, ethers.utils.parseEther("100"));
 
         // user1 sells token and this will execute _contractSwap function of TokenV2 contract.
         // _contractSwap function will swap tokens to ETH for taxWallet.
-        const taxWalletBalanceBefore = await ethers.provider.getBalance(taxWallet.address);
+        const taxWalletBalanceBefore = await ethers.provider.getBalance(
+          taxWallet.address,
+        );
         await TokenV2.connect(user1).transfer(
           pair,
           ethers.utils.parseEther("10"),
         );
-        
-        const taxWalletBalanceAfter = await ethers.provider.getBalance(taxWallet.address);
-        expect(Number(taxWalletBalanceAfter.sub(taxWalletBalanceBefore))).to.be.greaterThan(0);
-      });
 
+        const taxWalletBalanceAfter = await ethers.provider.getBalance(
+          taxWallet.address,
+        );
+        expect(
+          Number(taxWalletBalanceAfter.sub(taxWalletBalanceBefore)),
+        ).to.be.greaterThan(0);
+      });
       it("revert transfer if not enough balance", async () => {
         await expect(
           TokenV2.connect(user2).transfer(
@@ -200,6 +197,10 @@ describe("Token Migration", async () => {
             ethers.utils.parseEther("50"),
           ),
         ).to.be.revertedWith("insufficient balance");
+
+        await expect(
+          TokenV2.connect(user2).transfer(user1.address, 0),
+        ).to.be.revertedWith("Transfer amount must be greater than zero");
       });
       it("revert transferFrom if not enough allowance", async () => {
         await expect(
@@ -296,7 +297,7 @@ describe("Token Migration", async () => {
       });
     });
 
-    describe("distribute reward", async () => {
+    describe("Get Tax from buy & sell", async () => {
       beforeEach(async () => {
         // mint 100 to user1
         await TokenV2.transfer(user1.address, ethers.utils.parseEther("300"));
@@ -304,6 +305,38 @@ describe("Token Migration", async () => {
         await TokenV2.connect(user1).transfer(
           user2.address,
           ethers.utils.parseEther("100"),
+        );
+        const pair = await UniswapFactory.getPair(
+          TokenV2.address,
+          "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+        );
+        const currentTime = (await ethers.provider.getBlock("latest"))
+          .timestamp;
+
+        await TokenV2.transfer(
+          operator.address,
+          ethers.utils.parseEther("20000"),
+        );
+        await TokenV2.connect(operator).approve(
+          pair,
+          ethers.utils.parseEther("20000"),
+        );
+        await TokenV2.connect(operator).approve(
+          UniswapFactory.address,
+          ethers.utils.parseEther("20000"),
+        );
+        await TokenV2.connect(operator).approve(
+          UniswapRouter.address,
+          ethers.utils.parseEther("20000"),
+        );
+        await UniswapRouter.connect(operator).addLiquidityETH(
+          TokenV2.address,
+          ethers.utils.parseEther("10000"),
+          0,
+          0,
+          operator.address,
+          currentTime + 10000,
+          { value: 100000 },
         );
       });
 
@@ -315,70 +348,38 @@ describe("Token Migration", async () => {
           lpPair,
           ethers.utils.parseEther("100"),
         );
-        // 100 * 10% / 2 = 5 reward to holders.
-        const earnedTax = await TokenV2.balanceOf(rewardManager.address);
-        const expectedTax = ethers.utils.parseEther("100").div(10).div(2);
+        // 100 * 10% = 10 rewards.
+        const earnedTax = await TokenV2.balanceOf(TokenV2.address);
+        const expectedTax = ethers.utils.parseEther("100").div(10);
         expect(earnedTax).to.be.eq(expectedTax);
       });
-      it("distribute reward", async () => {
-        const lpPair = await TokenV2.lpPair();
-        await TokenV2.connect(user1).transfer(
-          lpPair,
-          ethers.utils.parseEther("100"),
+
+      it("get tax from buy transaction", async () => {
+        // user1 buy 100 token
+        // fees are claimed in this buy transaction based on buyTax
+        const currentTime = (await ethers.provider.getBlock("latest"))
+          .timestamp;
+        const balanceContractBefore = await TokenV2.balanceOf(TokenV2.address);
+        await UniswapRouter.connect(user1).swapETHForExactTokens(
+          ethers.utils.parseEther("10"),
+          ["0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", TokenV2.address],
+          user1.address,
+          currentTime + 10000,
+          { value: 1000000 },
         );
-        await TokenV2.distributeReward();
-
-        const lastRewardTime = await TokenV2.lastRewardTime();
-        expect(Number(lastRewardTime)).to.be.greaterThan(0);
-      });
-      it("claim Reward", async () => {
-        await TokenV2.transfer(user1.address, ethers.utils.parseEther("300"));
-
-        const lpPair = await TokenV2.lpPair();
-        // user1 sells 100 so remaining user1 - 400, user2 - 100
-        await TokenV2.connect(user1).transfer(
-          lpPair,
-          ethers.utils.parseEther("100"),
-        ); // get Tax on sell : 10
-        // distribute Reward  rewardAmount = 5 (100 * sellFee / 100 / 2)
-        await TokenV2.distributeReward();
-        // mint user2 200 and user2 sells 200, so remaining user1 - 400 , user2 - 100
-        await TokenV2.transfer(user2.address, ethers.utils.parseEther("200"));
-        await TokenV2.connect(user2).transfer(
-          lpPair,
-          ethers.utils.parseEther("200"),
-        ); // get Tax on sell : 20
-
-        // increase timestamp 7 days
-        await increaseBlockTimestamp(provider, 86400 * 7);
-        // distribute Reward rewardAmount = 20 / 2 = 5
-        await TokenV2.distributeReward();
-
-        const user2BalanceBefore = await TokenV2.balanceOf(user2.address);
-        // user2 claim rewards
-        // reward : 5 * 100 / (100 + 400) + 10 * 100 / (400 + 100)  = 3;
-        await TokenV2.connect(user2).claimReward();
-        const user2BalanceAfter = await TokenV2.balanceOf(user2.address);
-        expect(user2BalanceAfter.sub(user2BalanceBefore)).to.be.eq(
-          ethers.utils.parseEther("3"),
-        );
-      });
-      it("revert distribution if not owner", async () => {
-        await expect(TokenV2.connect(user1).distributeReward()).to.be.reverted;
-      });
-      it("revert if time is too early", async () => {
-        await TokenV2.distributeReward();
-        await expect(TokenV2.distributeReward()).to.be.revertedWith(
-          "Too Early",
-        );
+        // 100 * 5% = 0.5 rewards.
+        const balanceContractAfter = await TokenV2.balanceOf(TokenV2.address);
+        const expectedTax = ethers.utils.parseEther("10").div(20);
+        const earnedTax = balanceContractAfter.sub(balanceContractBefore);
+        expect(earnedTax).to.be.eq(expectedTax);
       });
     });
   });
   describe("Transfer/Renounce Ownership", async () => {
     it("transferOwner", async () => {
-      await TokenV2.transferOwner(rewardManager.address);
+      await TokenV2.transferOwner(user1.address);
       const newOwner = await TokenV2.getOwner();
-      expect(newOwner).to.be.eq(rewardManager.address);
+      expect(newOwner).to.be.eq(user1.address);
     });
     it("renouceOwner", async () => {
       await TokenV2.setNewRouter(UniswapRouter.address);
@@ -390,12 +391,12 @@ describe("Token Migration", async () => {
       const newOwner = await TokenV2.getOwner();
       expect(newOwner).to.be.eq(ethers.constants.AddressZero);
     });
-    it("revert if not admin", async () => {
-      await expect(TokenV2.connect(user2).transferOwner(rewardManager.address))
-        .to.be.reverted;
+    it("revert transferOwnership if not admin", async () => {
+      await expect(TokenV2.connect(user2).transferOwner(user1.address)).to.be
+        .reverted;
       await expect(TokenV2.connect(user1).renounceOwnership()).to.be.reverted;
     });
-    it("revert if some other case", async () => {
+    it("revert renounce Ownership if some other case", async () => {
       // zero address or DEAD
       await expect(
         TokenV2.transferOwner(ethers.constants.AddressZero),
@@ -461,17 +462,25 @@ describe("Token Migration", async () => {
         .be.reverted;
       await expect(TokenV2.connect(user2).setPriceImpactSwapAmount(10)).to.be
         .reverted;
-      await expect(TokenV2.connect(user2).setRatios(1, 1, 1, 1)).to.be.reverted;
+      await expect(TokenV2.connect(user2).setRatios(1, 1, 1)).to.be.reverted;
+      await expect(
+        TokenV2.connect(user2).setWallets(
+          user1.address,
+          user1.address,
+          user1.address,
+        ),
+      ).to.be.reverted;
+      await expect(TokenV2.connect(user2).setSwapSettings(1, 100, 2, 100)).to.be
+        .reverted;
       await expect(
         TokenV2.connect(user2).setExcludedFromFees(user1.address, true),
       ).to.be.reverted;
       await expect(TokenV2.connect(user2).blockAddress(user1.address, true)).to
         .be.reverted;
-      await expect(TokenV2.connect(user2).setRewardRatio(10)).to.be.reverted;
-      await expect(TokenV2.connect(user2).setRewardManager(user1.address)).to.be
-        .reverted;
-      await expect(TokenV2.connect(user2).enableTrading()).to.be
-        .reverted;
+      await expect(TokenV2.connect(user2).enableTrading()).to.be.reverted;
+      await expect(TokenV2.connect(user2).sweepContingency()).to.be.reverted;
+      await expect(TokenV2.connect(user2).sweepExternalTokens(TokenV1.address))
+        .to.be.reverted;
     });
     it("revert setTokenV1 if not before Migration", async () => {
       await TokenV2.setMigration();
@@ -480,7 +489,7 @@ describe("Token Migration", async () => {
       );
     });
     it("revert setRatios excess buy&sell fees", async () => {
-      await expect(TokenV2.setRatios(500, 500, 500, 500)).to.be.revertedWith(
+      await expect(TokenV2.setRatios(500, 500, 1000)).to.be.revertedWith(
         "Cannot exceed sum of buy and sell fees",
       );
     });
@@ -494,6 +503,22 @@ describe("Token Migration", async () => {
       await expect(TokenV2.setTaxes(1, 1, 1)).to.be.revertedWith(
         "Taxes are locked",
       );
+    });
+    it("revert setPriceImpactSwapAmount if above 1.5 %", async () => {
+      await expect(TokenV2.setPriceImpactSwapAmount("200")).to.be.revertedWith(
+        "Cannot set above 1.5%",
+      );
+    });
+    it("revert block address if zero address", async () => {
+      await expect(
+        TokenV2.blockAddress(ethers.constants.AddressZero, true),
+      ).to.be.revertedWith("Cannot block zero address");
+      await expect(
+        TokenV2.blockAddress(
+          "0x000000000000000000000000000000000000dEaD",
+          true,
+        ),
+      ).to.be.revertedWith("Cannot block zero address");
     });
   });
   it("view functionality", async () => {

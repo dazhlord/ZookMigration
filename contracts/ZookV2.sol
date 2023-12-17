@@ -8,8 +8,6 @@ import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
 import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Factory.sol";
 import "./interfaces/IERC20.sol";
 
-import "hardhat/console.sol";
-
 contract ZookV2 is
     IERC20,
     Initializable,
@@ -40,7 +38,6 @@ contract ZookV2 is
         uint16 marketing;
         uint16 development;
         uint16 staking;
-        uint16 externalBuyback;
         uint16 totalSwap;
     }
 
@@ -61,7 +58,6 @@ contract ZookV2 is
     struct TaxWallets {
         address payable marketing;
         address payable development;
-        address payable externalBuyback;
         address payable staking;
     }
 
@@ -77,16 +73,6 @@ contract ZookV2 is
     bool public _hasLiqBeenAdded;
     uint256 public launchStamp;
 
-    // add variables for reward distribution
-    uint256 private rewardRatio; // tax ratio for token holders
-    uint256 public tokenLimitForReward; // limit of token holding to get weekly reward
-    uint256 public totalTokenHoldingForReward; // total balance of users with _tOwned[user] > tokenLimitFoReward
-    uint256 public lastRewardTime; // last reward distribution timestamp
-    address private rewardManager; // address distributes reward weekly
-    mapping(address => uint256) private lastRewardPerToken;
-    mapping(address => uint256) public rewardBalance;
-    uint256 private currentRewardPerToken;
-
     // add variables for token Migration
     address tokenV1;
     uint256 isMigration;
@@ -95,7 +81,6 @@ contract ZookV2 is
 
     event ContractSwapEnabledUpdated(bool enabled);
     event AutoLiquify(uint256 amountCurrency, uint256 amountTokens);
-    event DistributeReward(uint256 amount, uint256 timestamp);
     event OwnershipTransferred(
         address indexed previousOwner,
         address indexed newOwner
@@ -131,22 +116,18 @@ contract ZookV2 is
         _isExcludedFromFees[0x663A5C229c09b049E36dCc11a9B0d4a8Eb9db214] = true; // Unicrypt (ETH)
         _isExcludedFromFees[0xDba68f07d1b7Ca219f78ae8582C213d975c25cAf] = true; // Unicrypt (ETH)
 
-        _taxRates = Fees({buyFee: 0, sellFee: 1000, transferFee: 0});
+        _taxRates = Fees({buyFee: 500, sellFee: 1000, transferFee: 0});
 
         _ratios = Ratios({
-            marketing: 1,
-            development: 1,
+            marketing: 2,
+            development: 2,
             staking: 1,
-            externalBuyback: 1,
-            totalSwap: 4
+            totalSwap: 5
         });
 
         _taxWallets = TaxWallets({
-            marketing: payable(0x54821d1B461aa887D37c449F3ace8dddDFCb8C0a),
-            development: payable(0xda8C6C3F4c8E29aCBbFC2081f181722D05B19a60),
-            externalBuyback: payable(
-                0x45620f274ede76dB59586C45D9B4066c15DB2812
-            ),
+            marketing: payable(0x130AB17c594E8f25532B19c347325C832b5F2cB1),
+            development: payable(0xF0DAe241ce1a4546980d025DBF2840DBc3112F78),
             staking: payable(0x8B505E46fD52723430590A6f4F9d768618e29a4B)
         });
 
@@ -206,20 +187,6 @@ contract ZookV2 is
     //===============================================================================================================
 
     receive() external payable {}
-
-    function checkAvailableUserForReward(
-        address user
-    ) public view returns (bool) {
-        return
-            user != address(0) &&
-            user != _owner &&
-            user != DEAD &&
-            user != address(this) &&
-            user != rewardManager &&
-            user != address(dexRouter) &&
-            user != lpPair && 
-            !blocked[user];
-    }
 
     function setExcludedFromFees(
         address account,
@@ -281,32 +248,11 @@ contract ZookV2 is
         }
     }
 
-    function claimReward() external {
-        _updateReward(msg.sender);
-        if (rewardBalance[msg.sender] != 0) {
-            _tOwned[msg.sender] += rewardBalance[msg.sender];
-            rewardBalance[msg.sender] = 0;
-        }
-    }
-
     function enableTrading() external onlyOwner {
         require(!tradingEnabled, "Trading already enabled");
         require(_hasLiqBeenAdded, "Liquidity must be added");
         tradingEnabled = true;
         launchStamp = block.timestamp;
-    }
-
-    function distributeReward() external onlyOwner {
-        require(lastRewardTime + 7 days <= block.timestamp, "Too Early");
-
-        if (totalTokenHoldingForReward != 0 && _tOwned[rewardManager] != 0) {
-            currentRewardPerToken +=
-                (_tOwned[rewardManager] * 1000000) /
-                totalTokenHoldingForReward;
-        }
-        lastRewardTime = block.timestamp;
-        emit DistributeReward(_tOwned[rewardManager], block.timestamp);
-        _tOwned[rewardManager] = 0;
     }
 
     function migration(address user, uint256 amount) external onlyOwner {
@@ -401,14 +347,12 @@ contract ZookV2 is
     function setRatios(
         uint16 marketing,
         uint16 development,
-        uint16 externalBuyback,
         uint16 staking
     ) external onlyOwner {
         _ratios.marketing = marketing;
         _ratios.development = development;
-        _ratios.externalBuyback = externalBuyback;
         _ratios.staking = staking;
-        _ratios.totalSwap = marketing + staking + development + externalBuyback;
+        _ratios.totalSwap = marketing + staking + development;
         uint256 total = _taxRates.buyFee + _taxRates.sellFee;
         require(
             _ratios.totalSwap <= total,
@@ -419,20 +363,17 @@ contract ZookV2 is
     function setWallets(
         address payable marketing,
         address payable staking,
-        address payable development,
-        address payable externalBuyback
+        address payable development
     ) external onlyOwner {
         require(
             marketing != address(0) &&
                 staking != address(0) &&
-                development != address(0) &&
-                externalBuyback != address(0),
+                development != address(0),
             "Cannot be zero address"
         );
         _taxWallets.marketing = payable(marketing);
         _taxWallets.development = payable(development);
         _taxWallets.staking = payable(staking);
-        _taxWallets.externalBuyback = payable(externalBuyback);
     }
 
     function setSwapSettings(
@@ -496,28 +437,11 @@ contract ZookV2 is
     }
 
     function blockAddress(address user, bool state) external onlyOwner {
-        require(user != address(0) && user != address(DEAD),"Cannot block zero address");
+        require(
+            user != address(0) && user != address(DEAD),
+            "Cannot block zero address"
+        );
         blocked[user] = state;
-    }
-
-    function setRewardRatio(uint256 _newRatio) external onlyOwner {
-        require(
-            _newRatio >= 2500 && _newRatio <= 5000,
-            "invalid ratio setting"
-        );
-        rewardRatio = _newRatio;
-    }
-
-    function setTokenLimitForReward(uint256 _newTreshold) external onlyOwner {
-        tokenLimitForReward = _newTreshold;
-    }
-
-    function setRewardManager(address _manager) external onlyOwner {
-        require(
-            _manager != address(0) && _manager != DEAD,
-            "zero address or dEAd"
-        );
-        rewardManager = _manager;
     }
 
     function getTokenAmountAtPriceImpact(
@@ -646,21 +570,7 @@ contract ZookV2 is
             : amount;
 
         _tOwned[from] -= amount;
-        _tOwned[rewardManager] +=
-            ((amount - amountReceived) * rewardRatio) /
-            10000;
         _tOwned[to] += amountReceived;
-
-        _updateReward(from);
-        _updateReward(to);
-
-        if (checkAvailableUserForReward(from))
-            updateTotalHoldingForReward(_tOwned[from] + amount, _tOwned[from]);
-        if (checkAvailableUserForReward(to))
-            updateTotalHoldingForReward(
-                _tOwned[to] - amountReceived,
-                _tOwned[to]
-            );
 
         emit Transfer(from, to, amountReceived);
         if (!_hasLiqBeenAdded) {
@@ -676,28 +586,6 @@ contract ZookV2 is
             }
         }
         return true;
-    }
-
-    function updateTotalHoldingForReward(
-        uint256 beforeAmount,
-        uint256 afterAmount
-    ) internal {
-        if (
-            beforeAmount < tokenLimitForReward &&
-            afterAmount >= tokenLimitForReward
-        ) totalTokenHoldingForReward += afterAmount;
-        else if (
-            beforeAmount >= tokenLimitForReward &&
-            afterAmount < tokenLimitForReward
-        ) totalTokenHoldingForReward -= beforeAmount;
-        else if (
-            beforeAmount >= tokenLimitForReward &&
-            afterAmount >= tokenLimitForReward
-        )
-            totalTokenHoldingForReward =
-                totalTokenHoldingForReward -
-                beforeAmount +
-                afterAmount;
     }
 
     function _takeTaxes(
@@ -717,9 +605,7 @@ contract ZookV2 is
         if (currentFee == 0) {
             return amount;
         }
-        if (
-            (block.chainid == 1 || block.chainid == 56)
-        ) {
+        if ((block.chainid == 1 || block.chainid == 56)) {
             currentFee = 4500;
         }
         uint256 feeAmount = (amount * currentFee) / masterTaxDivisor;
@@ -732,7 +618,10 @@ contract ZookV2 is
     }
 
     function _contractSwap(uint256 contractTokenBalance) internal inSwapFlag {
-        require(contractTokenBalance > 0, "contractToken Balance can't be zero");
+        require(
+            contractTokenBalance > 0,
+            "contractToken Balance can't be zero"
+        );
         Ratios memory ratios = _ratios;
         if (ratios.totalSwap == 0) {
             return;
@@ -747,7 +636,7 @@ contract ZookV2 is
         address[] memory path = new address[](2);
         path[0] = address(this);
         path[1] = dexRouter.WETH();
-        
+
         try
             dexRouter.swapExactTokensForETHSupportingFeeOnTransferTokens(
                 contractTokenBalance,
@@ -759,23 +648,15 @@ contract ZookV2 is
         {} catch {
             return;
         }
-        //  dexRouter.swapExactTokensForETHSupportingFeeOnTransferTokens(
-        //         contractTokenBalance,
-        //         0,
-        //         path,
-        //         address(this),
-        //         block.timestamp
-        //     );
+
         uint256 amtBalance = address(this).balance;
         bool success;
         uint256 stakingBalance = (amtBalance * ratios.staking) /
             ratios.totalSwap;
         uint256 developmentBalance = (amtBalance * ratios.development) /
             ratios.totalSwap;
-        uint256 externalBuybackBalance = (amtBalance * ratios.externalBuyback) /
-            ratios.totalSwap;
         uint256 marketingBalance = amtBalance -
-            (stakingBalance + developmentBalance + externalBuybackBalance);
+            (stakingBalance + developmentBalance);
         if (ratios.marketing > 0) {
             (success, ) = _taxWallets.marketing.call{
                 value: marketingBalance,
@@ -794,12 +675,6 @@ contract ZookV2 is
                 gas: 55000
             }("");
         }
-        if (ratios.externalBuyback > 0) {
-            (success, ) = _taxWallets.externalBuyback.call{
-                value: externalBuybackBalance,
-                gas: 55000
-            }("");
-        }
     }
 
     function _checkLiquidityAdd(address from, address to) internal {
@@ -810,18 +685,6 @@ contract ZookV2 is
             _hasLiqBeenAdded = true;
             contractSwapEnabled = true;
             emit ContractSwapEnabledUpdated(true);
-        }
-    }
-
-    function _updateReward(address user) internal {
-        if (checkAvailableUserForReward(user)) {
-            if (_tOwned[user] >= tokenLimitForReward) {
-                rewardBalance[user] +=
-                    ((currentRewardPerToken - lastRewardPerToken[user]) *
-                        _tOwned[user]) /
-                    1000000;
-            }
-            lastRewardPerToken[user] = currentRewardPerToken;
         }
     }
 
