@@ -57,11 +57,11 @@ const config: HardhatUserConfig = {
 
     // Etherum mainnet
     // mainnet: {
-    //   url: process.env.RPC_URL_MAINNET || "",
+    //   url: process.env.ETH_NODE_URI_MAINNET || "",
     // },
     // // Ethereum Goerli
     // goerli: {
-    //   url: process.env.RPC_URL_GOERLI || "",
+    //   url: process.env.ETH_NODE_URI_GOERLI || "",
     //   accounts:
     //     process.env.DEPLOYER_PKEY !== undefined
     //       ? [process.env.DEPLOYER_PKEY]
